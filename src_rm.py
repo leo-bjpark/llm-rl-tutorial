@@ -206,6 +206,11 @@ def build_reward_inputs(
     if not response_in_text and response:
         print(f"[WARNING] Response not found in formatted text! Response: {response[:50]}...")
     
+    # Set padding side to left so that response tokens are at the end
+    # This ensures the last non-padding token is from the response
+    original_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+    
     tokens = tokenizer(
         full_text,
         truncation=True,
@@ -213,6 +218,9 @@ def build_reward_inputs(
         padding="max_length",
         return_tensors="pt",
     )
+    
+    # Restore original padding side
+    tokenizer.padding_side = original_padding_side
     
     input_ids = tokens["input_ids"].to(device)
     attention_mask = tokens.get("attention_mask", None)
