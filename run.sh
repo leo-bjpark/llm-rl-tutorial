@@ -23,9 +23,11 @@ python train.py \
     --epochs $epochs
 
 # After SFT training, set the path for other algorithms
+# Note: The path will be auto-generated if not provided, but you can set it explicitly here
 sft_lora_path="checkpoints/google/gemma-3-4b-it-sft-lora"
 
 # DPO (Direct Preference Optimization)
+# Requires: SFT checkpoint must exist at sft_lora_path
 algorithm="dpo"
 beta=0.1
 average_log_prob=true
@@ -42,6 +44,7 @@ python train.py \
     --average_log_prob $average_log_prob
 
 # RM (Reward Model)
+# Requires: SFT checkpoint must exist at sft_lora_path
 algorithm="rm"
 python train.py \
     --model_name $model_name \
@@ -55,6 +58,7 @@ python train.py \
     --batch_size $batch_size
 
 # PPO (Proximal Policy Optimization)
+# Requires: SFT checkpoint and RM checkpoint must exist
 algorithm="ppo"
 reward_model_path="checkpoints/google/gemma-3-4b-it-rm-lora"
 kl_coef=0.1
@@ -82,6 +86,7 @@ python train.py \
     --top_p $top_p
 
 # GRPO (Group Relative Policy Optimization)
+# Requires: SFT checkpoint (RM checkpoint is optional)
 algorithm="grpo"
 num_responses=4
 use_dataset_responses=false
