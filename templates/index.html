@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>LLM Tuned with LoRA</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    * { box-sizing: border-box; margin:0; padding:0; }
+    body { 
+      font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+      background-color: #F4F0E8;
+    }
+    .container { display:grid; grid-template-columns:1.2fr 1fr; min-height:100vh; }
+    .left, .right { padding:24px; border-left:1px solid #000; }
+    .left { border-left:none; border-right:1px solid #000; }
+    h2 { font-size:18px; margin-bottom:16px; border-bottom:1px solid #000; padding-bottom:8px; }
+    #questionBox, #answerBox, #detailBox {
+      border:1px solid #ddd; padding:10px; margin-bottom:10px; background:#fafafa;
+      font-size:14px; white-space:pre-wrap;
+    }
+    #graph { width:100%; height:420px; border:1px solid #000; margin-bottom:12px; }
+    .run-button {
+      width:100%; padding:12px; margin-bottom:12px;
+      background:#1a73e8; color:#fff; border:none;
+      font-size:14px; font-weight:bold; cursor:pointer;
+      border-radius:4px;
+    }
+    .run-button:hover { background:#1557b0; }
+    .run-button:disabled { background:#ccc; cursor:not-allowed; }
+    .model-results {
+      margin-top:16px; border-top:2px solid #000; padding-top:16px;
+    }
+    .model-result {
+      margin-bottom:16px; border:1px solid #ddd; padding:12px; background:#fff;
+    }
+    .model-result-header {
+      font-weight:bold; font-size:14px; margin-bottom:8px;
+      padding-bottom:6px; border-bottom:1px solid #eee;
+    }
+    .model-result-content {
+      font-size:13px; line-height:1.6; color:#333;
+      white-space:pre-wrap; word-wrap:break-word;
+    }
+    .model-result-error {
+      color:#d32f2f; font-size:12px; font-style:italic;
+    }
+    .model-result-loading {
+      color:#666; font-size:12px; font-style:italic;
+    }
+    .model-status {
+      display:inline-block; padding:2px 6px; margin-left:8px;
+      font-size:11px; border-radius:3px;
+    }
+    .model-status.loaded { background:#4caf50; color:#fff; }
+    .model-status.not-loaded { background:#f44336; color:#fff; }
+    .reward-badge {
+      display:inline-block; padding:2px 8px; margin-left:8px;
+      font-size:11px; border-radius:3px;
+      background:#ff9800; color:#fff;
+      font-weight:bold;
+    }
+    .loading-overlay {
+      position:fixed; top:0; left:0; right:0; bottom:0;
+      background:rgba(255,255,255,0.9); z-index:10000;
+      display:flex; align-items:center; justify-content:center;
+      flex-direction:column;
+    }
+    .loading-spinner {
+      width:40px; height:40px; border:4px solid #f3f3f3;
+      border-top:4px solid #1a73e8; border-radius:50%;
+      animation:spin 1s linear infinite; margin-bottom:16px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .loading-text {
+      font-size:16px; color:#333; font-weight:500;
+    }
+    .loading-detail {
+      font-size:14px; color:#666; margin-top:8px;
+    }
+    .search-box { margin-bottom:12px; position:relative; }
+    .search-loading {
+      position:absolute; right:8px; top:50%; transform:translateY(-50%);
+      width:16px; height:16px; border:2px solid #f3f3f3;
+      border-top:2px solid #1a73e8; border-radius:50%;
+      animation:spin 0.8s linear infinite; display:none;
+    }
+    .item-list { position:relative; }
+    .list-loading {
+      padding:20px; text-align:center; color:#666;
+      display:none;
+    }
+    .search-input { width:100%; padding:8px; border:1px solid #000; }
+    .item-list { border:1px solid #000; max-height:520px; overflow-y:auto; font-size:13px; background:#fff; }
+    .item { padding:8px; border-bottom:1px solid #eee; cursor:pointer; }
+    .item:hover { background:#f5f5f5; }
+    .item-id { font-weight:bold; font-size:12px; color:#444; }
+    .item-q { margin-top:4px; }
+  </style>
+  <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="left">
+      <h2>Prompt 및 응답</h2>
+      
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px; font-weight:bold; display:block; margin-bottom:6px;">
+          Backbone Model:
+        </label>
+        <select id="backboneSelect" style="width:100%; padding:8px; border:1px solid #000; font-size:13px;">
+          <option value="">로딩 중...</option>
+        </select>
+      </div>
+      
+      <button id="loadModelButton" class="run-button" onclick="loadModel()" style="background:#4caf50; margin-bottom:8px;">
+        Load Model
+      </button>
+      <div id="modelLoadStatus" style="font-size:12px; color:#666; margin-bottom:12px; padding:8px; background:#f5f5f5; border:1px solid #ddd; display:none;">
+        <div id="modelLoadStatusText">-</div>
+      </div>
+      
+      <div id="graph" style="display:none;"></div>
+      <div id="questionBox">질문이 여기 표시됩니다.</div>
+      <div id="answerBox">정답이 여기 표시됩니다.</div>
+      
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px; font-weight:bold; display:block; margin-bottom:6px;">
+          Max Tokens:
+        </label>
+        <input type="number" id="maxTokensInput" value="128" min="1" max="512" 
+               style="width:100%; padding:8px; border:1px solid #000; font-size:13px;">
+      </div>
+      
+      <button id="runButton" class="run-button" onclick="runModels()" disabled>
+        Generate (SFT, DPO, PPO, GRPO)
+      </button>
+      <div id="modelResults" class="model-results" style="display:none;">
+        <h3 style="font-size:16px; margin-bottom:12px;">모델 생성 결과</h3>
+        <div id="sftResult" class="model-result">
+          <div class="model-result-header">
+            SFT (Supervised Fine-Tuning)
+            <span id="sftStatus" class="model-status not-loaded">Not Loaded</span>
+            <span id="sftReward" class="reward-badge" style="display:none;">Reward: -</span>
+          </div>
+          <div id="sftContent" class="model-result-content">-</div>
+        </div>
+        <div id="dpoResult" class="model-result">
+          <div class="model-result-header">
+            DPO (Direct Preference Optimization)
+            <span id="dpoStatus" class="model-status not-loaded">Not Loaded</span>
+            <span id="dpoReward" class="reward-badge" style="display:none;">Reward: -</span>
+          </div>
+          <div id="dpoContent" class="model-result-content">-</div>
+        </div>
+        <div id="ppoResult" class="model-result">
+          <div class="model-result-header">
+            PPO (Proximal Policy Optimization)
+            <span id="ppoStatus" class="model-status not-loaded">Not Loaded</span>
+            <span id="ppoReward" class="reward-badge" style="display:none;">Reward: -</span>
+          </div>
+          <div id="ppoContent" class="model-result-content">-</div>
+        </div>
+        <div id="grpoResult" class="model-result">
+          <div class="model-result-header">
+            GRPO (Group Relative Policy Optimization)
+            <span id="grpoStatus" class="model-status not-loaded">Not Loaded</span>
+            <span id="grpoReward" class="reward-badge" style="display:none;">Reward: -</span>
+          </div>
+          <div id="grpoContent" class="model-result-content">-</div>
+        </div>
+      </div>
+      <div id="detailBox" style="font-size:12px;color:#555;">
+        오른쪽에서 SHP 예제를 선택하면<br>
+        Prompt, Chosen, Rejected 응답을 확인할 수 있습니다.
+      </div>
+    </div>
+
+    <div class="right">
+      <h2>Stanford Human Preferences Dataset (SHP)</h2>
+      <div class="search-box">
+        <input id="searchInput" class="search-input"
+               placeholder="ID, 질문, 정답으로 검색 후 Enter" />
+        <div id="searchLoading" class="search-loading"></div>
+      </div>
+      <div id="list" class="item-list">
+        <div id="listLoading" class="list-loading">로딩 중...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loadingText">로딩 중...</div>
+    <div class="loading-detail" id="loadingDetail"></div>
+  </div>
+
+  <script>
+    let cy = null;
+    let currentItemId = null;
+
+    function initGraph() {
+      cy = cytoscape({
+        container: document.getElementById('graph'),
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'label': 'data(label)',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'text-wrap': 'wrap',
+              'text-max-width': 200,
+              'font-size': 14,
+              'shape': 'round-rectangle',
+              'width': 220,
+              'height': 'label',
+              'padding': '4px',
+              'background-color': '#ffffff',
+              'border-width': 2.0,
+              'border-color': '#222',
+              'box-shadow': '0 2px 4px rgba(0,0,0,0.28)',
+              'z-index': 10
+            }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 1.5,
+              'line-color': '#999',
+              'target-arrow-color': '#999',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'label': 'data(label)',
+              'font-size': 15,
+              'font-weight': 'bold',
+              'color': '#333333',
+              'text-rotation': 'none',
+              // edge 라벨을 노드·선보다 위로 올리기 위해 y 오프셋을 크게 줌
+              'text-margin-y': -34,
+              'text-background-color': '#ffffff',
+              'text-background-opacity': 1,
+              'text-background-padding': 6,
+              'text-background-shape': 'roundrectangle',
+              // 라벨 아래 흰색 아웃라인을 넣어 노드/선 위에서도 잘 보이도록
+              'text-outline-width': 3,
+              'text-outline-color': '#ffffff',
+              'z-index': 999
+            }
+          },
+          {
+            selector: 'edge[placeholder_edge = "true"]',
+            style: {
+              'line-color': '#d32f2f',
+              'target-arrow-color': '#d32f2f',
+              'font-weight': 'bold',
+              'color': '#b71c1c',
+              'font-size': 16
+            }
+          }
+        ],
+        layout: {
+          name: 'breadthfirst',
+          directed: true,
+          padding: 10,
+          spacingFactor: 1.1,
+          avoidOverlap: true,
+          fit: true,
+          animate: false,
+          // swap x/y so root→leaf 방향이 좌→우가 되도록 변환
+          transform: (node, pos) => ({ x: pos.y, y: pos.x })
+        }
+      });
+    }
+
+    function showLoadingOverlay(text, detail) {
+      const overlay = document.getElementById('loadingOverlay');
+      document.getElementById('loadingText').textContent = text || '로딩 중...';
+      document.getElementById('loadingDetail').textContent = detail || '';
+      overlay.style.display = 'flex';
+    }
+
+    function hideLoadingOverlay() {
+      document.getElementById('loadingOverlay').style.display = 'none';
+    }
+
+    async function search(query) {
+      const searchLoading = document.getElementById('searchLoading');
+      const listLoading = document.getElementById('listLoading');
+      const list = document.getElementById('list');
+      
+      searchLoading.style.display = 'block';
+      listLoading.style.display = 'block';
+      
+      try {
+        const res = await fetch(`/api/index/search?q=${encodeURIComponent(query || '')}`);
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const text = await res.text();
+          throw new Error(`Expected JSON but got ${contentType}`);
+        }
+        
+        const data = await res.json();
+        
+        if (!data.results || data.results.length === 0) {
+          list.innerHTML = '<div class="item">검색 결과가 없습니다.</div>';
+        } else {
+          list.innerHTML = data.results.map(r => `
+            <div class="item" onclick="loadItem('${r.id}')">
+              <div class="item-id">${r.id}</div>
+              <div class="item-q">${r.question}</div>
+              <div style="margin-top:4px;color:#666;">정답: ${r.answer}</div>
+            </div>
+          `).join('');
+        }
+      } catch (error) {
+        list.innerHTML = `<div class="item" style="color:#d32f2f;">오류: ${error.message}</div>`;
+      } finally {
+        searchLoading.style.display = 'none';
+        listLoading.style.display = 'none';
+      }
+    }
+
+    async function loadItem(id) {
+      currentItemId = id;
+      
+      // Show loading state
+      const questionBox = document.getElementById('questionBox');
+      const answerBox = document.getElementById('answerBox');
+      const detailBox = document.getElementById('detailBox');
+      
+      questionBox.textContent = '로딩 중...';
+      answerBox.textContent = '로딩 중...';
+      detailBox.textContent = '데이터를 불러오는 중입니다...';
+      
+      try {
+        const res = await fetch(`/api/index/${encodeURIComponent(id)}`);
+        
+        if (!res.ok) {
+          let errorText;
+          try {
+            const errorData = await res.json();
+            errorText = errorData.error || `HTTP ${res.status}`;
+          } catch {
+            errorText = `HTTP ${res.status}: ${res.statusText}`;
+          }
+          throw new Error(errorText);
+        }
+        
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const text = await res.text();
+          throw new Error(`Expected JSON but got ${contentType}`);
+        }
+        
+        const data = await res.json();
+        
+        if (data.error) {
+          alert(data.error);
+          return;
+        }
+
+        document.getElementById('questionBox').textContent = `Prompt: ${data.question}`;
+        
+        // Show chosen and rejected responses
+        let answerText = `Chosen: ${data.answer}`;
+        if (data.rejected) {
+          answerText += `\n\nRejected: ${data.rejected}`;
+        }
+        document.getElementById('answerBox').textContent = answerText;
+        
+        // Enable run button
+        document.getElementById('runButton').disabled = false;
+        
+        // Hide model results initially
+        document.getElementById('modelResults').style.display = 'none';
+
+        const detailBox = document.getElementById('detailBox');
+        let html = '';
+        
+       
+          detailBox.innerHTML = html;
+
+        // Graph will be empty for SHP data
+        if (!cy) initGraph();
+        cy.elements().remove();
+        
+      } catch (error) {
+        questionBox.textContent = '오류 발생';
+        answerBox.textContent = `오류: ${error.message}`;
+        detailBox.textContent = '데이터를 불러오는 중 오류가 발생했습니다.';
+      }
+    }
+
+    async function checkModelStatus() {
+      try {
+        const res = await fetch('/api/models/status');
+        const data = await res.json();
+        return data.loaded;
+      } catch (error) {
+        console.error('Failed to check model status:', error);
+        return false;
+      }
+    }
+
+    async function loadModel() {
+      const backboneSelect = document.getElementById('backboneSelect');
+      const selectedBackbone = backboneSelect.value;
+      
+      if (!selectedBackbone) {
+        alert('먼저 Backbone Model을 선택해주세요.');
+        return;
+      }
+
+      const button = document.getElementById('loadModelButton');
+      const statusDiv = document.getElementById('modelLoadStatus');
+      const statusText = document.getElementById('modelLoadStatusText');
+      
+      button.disabled = true;
+      button.textContent = 'Loading...';
+      statusDiv.style.display = 'block';
+      statusText.textContent = '모델을 로드하는 중입니다...';
+      
+      showLoadingOverlay('모델 로딩 중...', `Backbone: ${selectedBackbone}을(를) 로드하는 중입니다. 시간이 다소 걸릴 수 있습니다.`);
+
+      try {
+        const res = await fetch('/api/models/load', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ backbone: selectedBackbone }),
+        });
+        
+        const data = await res.json();
+        
+        if (data.success) {
+          statusText.innerHTML = `✅ 모델 로드 완료: ${data.backbone}<br>`;
+          if (data.adapters) {
+            const adapterList = Object.entries(data.adapters)
+              .map(([type, info]) => {
+                const existsIcon = info.exists ? '✅' : '❌';
+                // For RM, show loaded status if available
+                if (type === 'rm' && info.loaded !== undefined) {
+                  const loadedIcon = info.loaded ? '✅' : '❌';
+                  return `${type.toUpperCase()}: ${existsIcon}${info.loaded ? ' (로드됨)' : ''}`;
+                }
+                return `${type.toUpperCase()}: ${existsIcon}`;
+              })
+              .join(' | ');
+            statusText.innerHTML += `<small style="font-size:11px; color:#666;">${adapterList}</small>`;
+          }
+          
+          // Enable generate button
+          document.getElementById('runButton').disabled = false;
+        } else {
+          statusText.textContent = `❌ 로드 실패: ${data.error || 'Unknown error'}`;
+          alert(`모델 로드 실패: ${data.error}`);
+        }
+      } catch (error) {
+        statusText.textContent = `❌ 오류 발생: ${error.message}`;
+        alert(`모델 로드 중 오류: ${error.message}`);
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Load Model';
+        hideLoadingOverlay();
+      }
+    }
+
+    async function runModels() {
+      if (!currentItemId) {
+        alert('먼저 샘플을 선택해주세요.');
+        return;
+      }
+
+      // Check if model is loaded
+      const isLoaded = await checkModelStatus();
+      if (!isLoaded) {
+        alert('먼저 모델을 로드해주세요.');
+        return;
+      }
+
+      const button = document.getElementById('runButton');
+      button.disabled = true;
+      button.textContent = '생성 중...';
+
+      // Get max tokens
+      const maxTokens = parseInt(document.getElementById('maxTokensInput').value) || 128;
+
+      // Show results area
+      const resultsDiv = document.getElementById('modelResults');
+      resultsDiv.style.display = 'block';
+
+      // Clear previous results and show loading state
+      const models = ['sft', 'dpo', 'ppo', 'grpo'];
+      models.forEach(model => {
+        const contentDiv = document.getElementById(`${model}Content`);
+        const statusSpan = document.getElementById(`${model}Status`);
+        const rewardBadge = document.getElementById(`${model}Reward`);
+        contentDiv.innerHTML = '<span class="model-result-loading">⏳ 생성 중...</span>';
+        statusSpan.textContent = 'Generating...';
+        statusSpan.className = 'model-status not-loaded';
+        rewardBadge.style.display = 'none';
+      });
+
+      // Generate for each model sequentially and update in real-time
+      for (const model of models) {
+        try {
+          const contentDiv = document.getElementById(`${model}Content`);
+          const statusSpan = document.getElementById(`${model}Status`);
+          const rewardBadge = document.getElementById(`${model}Reward`);
+          
+          contentDiv.innerHTML = '<span class="model-result-loading">⏳ 생성 중...</span>';
+          
+          const res = await fetch(
+            `/api/index/${encodeURIComponent(currentItemId)}/generate/${model}?max_tokens=${maxTokens}`
+          );
+          
+          // Check if response is OK
+          if (!res.ok) {
+            const errorText = await res.text();
+            throw new Error(`HTTP ${res.status}: ${errorText.substring(0, 100)}`);
+          }
+          
+          // Check content type
+          const contentType = res.headers.get('content-type');
+          if (!contentType || !contentType.includes('application/json')) {
+            const text = await res.text();
+            throw new Error(`Expected JSON but got ${contentType}. Response: ${text.substring(0, 100)}`);
+          }
+          
+          const data = await res.json();
+
+          // Update status
+          if (data.loaded) {
+            statusSpan.textContent = 'Loaded';
+            statusSpan.className = 'model-status loaded';
+          } else {
+            statusSpan.textContent = 'Not Loaded';
+            statusSpan.className = 'model-status not-loaded';
+          }
+
+          // Update content in real-time
+          if (data.error) {
+            contentDiv.innerHTML = `<span class="model-result-error">오류: ${data.error}</span>`;
+          } else if (data.response) {
+            contentDiv.textContent = data.response;
+          } else {
+            contentDiv.innerHTML = '<span class="model-result-error">생성된 응답이 없습니다</span>';
+          }
+          
+          // Update reward badge
+          console.log(`[${model}] Reward data:`, { reward: data.reward, reward_error: data.reward_error });
+          
+          if (data.reward !== null && data.reward !== undefined) {
+            rewardBadge.textContent = `Reward: ${data.reward.toFixed(4)}`;
+            rewardBadge.style.display = 'inline-block';
+            rewardBadge.style.background = '#ff9800'; // Reset to orange
+          } else if (data.reward_error) {
+            rewardBadge.textContent = `Reward: Error`;
+            rewardBadge.style.display = 'inline-block';
+            rewardBadge.style.background = '#f44336';
+          } else {
+            // No reward or reward model not loaded - show message
+            if (data.loaded && data.response) {
+              rewardBadge.textContent = `Reward: N/A`;
+              rewardBadge.style.display = 'inline-block';
+              rewardBadge.style.background = '#999';
+            } else {
+              rewardBadge.style.display = 'none';
+            }
+          }
+        } catch (error) {
+          const contentDiv = document.getElementById(`${model}Content`);
+          const statusSpan = document.getElementById(`${model}Status`);
+          const rewardBadge = document.getElementById(`${model}Reward`);
+          contentDiv.innerHTML = `<span class="model-result-error">오류: ${error.message}</span>`;
+          statusSpan.textContent = 'Error';
+          statusSpan.className = 'model-status not-loaded';
+          rewardBadge.style.display = 'none';
+        }
+      }
+
+      button.disabled = false;
+      button.textContent = 'Generate (SFT, DPO, PPO, GRPO)';
+    }
+
+    async function loadBackbones() {
+      try {
+        const res = await fetch('/api/backbones');
+        const data = await res.json();
+        const select = document.getElementById('backboneSelect');
+        
+        select.innerHTML = '';
+        if (data.backbones && data.backbones.length > 0) {
+          data.backbones.forEach(backbone => {
+            const option = document.createElement('option');
+            option.value = backbone;
+            option.textContent = backbone;
+            select.appendChild(option);
+          });
+          // Select first by default
+          select.value = data.backbones[0];
+        } else {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = '사용 가능한 backbone이 없습니다';
+          select.appendChild(option);
+        }
+      } catch (error) {
+        console.error('Failed to load backbones:', error);
+        const select = document.getElementById('backboneSelect');
+        select.innerHTML = '<option value="">로드 실패</option>';
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Show initial loading
+      showLoadingOverlay('SHP 데이터 로딩 중...', 'Stanford Human Preferences 데이터셋을 불러오는 중입니다.');
+      
+      initGraph();
+      
+      // Load backbones
+      loadBackbones();
+      
+      // Check if model is already loaded
+      const isLoaded = await checkModelStatus();
+      if (isLoaded) {
+        document.getElementById('modelLoadStatus').style.display = 'block';
+        document.getElementById('modelLoadStatusText').textContent = '✅ 모델이 이미 로드되어 있습니다.';
+        document.getElementById('runButton').disabled = false;
+      }
+      
+      // Load initial data
+      search('').then(() => {
+        hideLoadingOverlay();
+      }).catch((error) => {
+        hideLoadingOverlay();
+        console.error('Initial load error:', error);
+      });
+      
+      const input = document.getElementById('searchInput');
+      input.addEventListener('keypress', e => {
+        if (e.key === 'Enter') search(input.value.trim());
+      });
+    });
+  </script>
+</body>
+</html>
+
+

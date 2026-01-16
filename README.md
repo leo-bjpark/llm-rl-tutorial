@@ -16,7 +16,7 @@ The project is organized into three conceptual parts.
 | **DPO** | Relative preference between responses | Chosen vs rejected pairs | No | Directly align policy with preferences using a reference model | Medium |
 | **RM** | Scalar reward function | Chosen vs rejected pairs | Yes (this model) | Learn a reward signal that represents human preference | Low |
 | **PPO** | Expected reward under policy | Scalar rewards | Yes | Reinforcement learning with exploration and KL regularization | High |
-| **GRPO** | Relative ordering within a response group | Ranked / compared generations | Optional | Use group-wise comparisons for preference optimization | Medium–High |
+| **GRPO** | Relative ordering within a response group | Ranked / compared generations | Optional (requires only relative preference signals, not scalar rewards) | Use group-wise comparisons for preference optimization | Medium–High |
 
 
 ## Conceptual Differences
@@ -28,3 +28,10 @@ The project is organized into three conceptual parts.
 | Requires reference policy | ❌ | ✅ | ❌ | ✅ | ✅ |
 | Online generation during training | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Optimization stability | High | High | High | Medium | High |
+
+
+```
+bash run.sh 
+
+python app.py
+```

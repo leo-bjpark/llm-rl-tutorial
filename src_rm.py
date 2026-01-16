@@ -190,12 +190,21 @@ def build_reward_inputs(
         input_ids: (1, seq_len)
         attention_mask: (1, seq_len) or None
     """
+    # Debug: verify response is not empty
+    if not response or len(response.strip()) == 0:
+        print(f"[WARNING] build_reward_inputs received empty response! prompt length: {len(prompt)}")
+    
     # Format full conversation
     full_text = format_chat(
         tokenizer,
         prompt=prompt,
         response=response,
     )
+    
+    # Debug: verify response is in formatted text
+    response_in_text = response.strip() in full_text if response else False
+    if not response_in_text and response:
+        print(f"[WARNING] Response not found in formatted text! Response: {response[:50]}...")
     
     tokens = tokenizer(
         full_text,
@@ -209,6 +218,45 @@ def build_reward_inputs(
     attention_mask = tokens.get("attention_mask", None)
     if attention_mask is not None:
         attention_mask = attention_mask.to(device)
+    
+    # Debug: print input summary
+    # Determine pad token ID (Gemma uses 0, but check tokenizer)
+    if tokenizer.pad_token_id is not None:
+        pad_token_id = tokenizer.pad_token_id
+    elif hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
+        pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
+    else:
+        pad_token_id = 0
+    
+    # Use attention_mask if available (more reliable than checking pad_token_id)
+    if attention_mask is not None:
+        non_padding_tokens = attention_mask[0].sum().item()
+        last_non_pad_pos = non_padding_tokens - 1  # 0-indexed
+        # Get actual token IDs from the sequence (non-padding part)
+        actual_token_ids = input_ids[0][:non_padding_tokens].cpu().tolist()
+    else:
+        # Fallback: check pad_token_id
+        non_padding_mask = input_ids[0] != pad_token_id
+        non_padding_tokens = non_padding_mask.sum().item()
+        last_non_pad_pos = (non_padding_mask).nonzero(as_tuple=False)[-1].item() if non_padding_tokens > 0 else -1
+        actual_token_ids = input_ids[0][non_padding_mask].cpu().tolist()
+    
+    # Get last 20 token IDs for debugging
+    token_snippet = actual_token_ids[-20:] if len(actual_token_ids) >= 20 else actual_token_ids
+    
+    # Also check response tokens in the actual sequence
+    # Decode last part to verify response is included
+    try:
+        last_50_tokens_text = tokenizer.decode(actual_token_ids[-50:] if len(actual_token_ids) >= 50 else actual_token_ids, skip_special_tokens=False)
+        response_check = response[:50].strip().lower() in last_50_tokens_text.lower() if response else False
+    except:
+        response_check = False
+        last_50_tokens_text = ""
+    
+    print(f"[Reward Input Debug] Prompt len: {len(prompt)}, Response len: {len(response)}, Full text len: {len(full_text)}")
+    print(f"[Reward Input Debug] Non-pad tokens: {non_padding_tokens}, Last non-pad pos: {last_non_pad_pos}, Pad token ID: {pad_token_id}")
+    print(f"[Reward Input Debug] Last 20 token IDs: {token_snippet}")
+    print(f"[Reward Input Debug] Response in last 50 tokens: {response_check}, Last 50 tokens decoded (preview): {last_50_tokens_text[-100:]}")
     
     return input_ids, attention_mask
 
@@ -611,5 +659,41 @@ def compute_reward(
         reward_model.base_model.device,
     )
     
+    # Debug: check input hash to verify different inputs
+    # Use only non-padding tokens for hash to compare actual content
+    if tokenizer.pad_token_id is not None:
+        pad_token_id = tokenizer.pad_token_id
+    elif hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
+        pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
+    else:
+        pad_token_id = 0
+    
+    # Use attention_mask if available (more reliable)
+    if attention_mask is not None:
+        seq_length = attention_mask.sum(dim=1).item()
+        actual_length = seq_length
+        non_padding_tokens = input_ids[0][:seq_length].cpu().numpy()
+    else:
+        # Fallback: check pad_token_id
+        non_padding_mask = input_ids[0] != pad_token_id
+        actual_length = non_padding_mask.sum().item()
+        non_padding_tokens = input_ids[0][non_padding_mask].cpu().numpy()
+        seq_length = input_ids.shape[1]
+    
+    input_hash = hash(non_padding_tokens.tobytes()) if len(non_padding_tokens) > 0 else 0
+    
+    # Also hash the response part specifically (last 100 tokens of non-padding)
+    response_hash = hash(non_padding_tokens[-100:].tobytes()) if len(non_padding_tokens) > 100 else hash(non_padding_tokens.tobytes())
+    
+    # Debug: check what token position will be used for reward
+    last_token_pos = actual_length - 1  # 0-indexed position that will be used
+    print(f"[Reward Compute Debug] Response length: {len(response)}, Actual seq length: {actual_length}, Last token pos for reward: {last_token_pos}")
+    print(f"[Reward Compute Debug] Full input hash: {input_hash}, Response part hash (last 100 tokens): {response_hash}")
+    
     reward = reward_model(input_ids=input_ids, attention_mask=attention_mask)
-    return reward.item()
+    reward_value = reward.item()
+    
+    # Debug: print reward
+    print(f"[Reward Compute Debug] Final reward: {reward_value:.6f}")
+    
+    return reward_value

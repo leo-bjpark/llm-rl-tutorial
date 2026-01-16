@@ -71,7 +71,7 @@ def main():
     
     # Auto-generate paths based on model_name and algorithm
     # Convert model_name to safe directory name (replace / with -)
-    model_dir = args.model_name.replace("/", "-")
+    model_dir = args.model_name
     base_checkpoint_dir = f"checkpoints/{model_dir}"
     
     algorithm_suffix = {
@@ -87,35 +87,9 @@ def main():
     if args.algorithm != "sft" and args.sft_lora_path is None:
         args.sft_lora_path = f"{base_checkpoint_dir}/sft-lora"
     
-    # Validate sft_lora_path exists for algorithms that require it
-    if args.algorithm in ["dpo", "ppo", "grpo", "rm"]:
-        if not os.path.exists(args.sft_lora_path):
-            raise ValueError(
-                f"SFT LoRA checkpoint not found at '{args.sft_lora_path}'. "
-                f"Please run SFT training first or provide a valid --sft_lora_path."
-            )
-        if not os.path.exists(os.path.join(args.sft_lora_path, "adapter_config.json")):
-            raise ValueError(
-                f"Invalid SFT LoRA checkpoint at '{args.sft_lora_path}'. "
-                f"Missing 'adapter_config.json'. Please ensure SFT training completed successfully."
-            )
-    
     # Auto-generate reward_model_path for PPO/GRPO if not provided
     if args.algorithm in ["ppo", "grpo"] and args.reward_model_path is None:
         args.reward_model_path = f"{base_checkpoint_dir}/rm-lora"
-    
-    # Validate reward_model_path exists for PPO/GRPO
-    if args.algorithm in ["ppo", "grpo"]:
-        if not os.path.exists(args.reward_model_path):
-            raise ValueError(
-                f"Reward model checkpoint not found at '{args.reward_model_path}'. "
-                f"Please run RM training first or provide a valid --reward_model_path."
-            )
-        if not os.path.exists(os.path.join(args.reward_model_path, "reward_model.pt")):
-            raise ValueError(
-                f"Invalid reward model checkpoint at '{args.reward_model_path}'. "
-                f"Missing 'reward_model.pt'. Please ensure RM training completed successfully."
-            )
 
     if args.algorithm == "sft":
         run_sft_lora(
