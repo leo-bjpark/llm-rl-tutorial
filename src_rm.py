@@ -121,12 +121,15 @@ class RewardModel(nn.Module):
         """
         Forward pass through the reward model.
         
+        Note: Assumes left padding (tokens on the right, padding on the left).
+        This ensures the last non-padding token is always from the response.
+        
         Args:
-            input_ids: (batch_size, seq_len)
-            attention_mask: (batch_size, seq_len)
+            input_ids: (batch_size, seq_len) - left-padded if padding exists
+            attention_mask: (batch_size, seq_len) - 1 for tokens, 0 for padding
         
         Returns:
-            rewards: (batch_size,) scalar rewards
+            rewards: (batch_size,) scalar rewards for each sequence
         """
         outputs = self.base_model(
             input_ids=input_ids,
@@ -134,26 +137,29 @@ class RewardModel(nn.Module):
             output_hidden_states=True,
         )
         
-        # Get hidden states: (batch_size, seq_len, hidden_size)
+        # Get hidden states from the last layer: (batch_size, seq_len, hidden_size)
         hidden_states = outputs.hidden_states[-1]
         
-        # Extract final hidden state for each sequence
-        # Use the last non-padding token (or EOS token if present)
+        # Extract the last non-padding token's hidden state for each sequence
+        # With left padding, the last non-padding token is at position (seq_length - 1)
         if attention_mask is not None:
-            # Find the last non-padding token for each sequence
-            seq_lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
-            # Ensure seq_lengths is on the same device as hidden_states
-            seq_lengths = seq_lengths.to(hidden_states.device)
-            # Clamp to valid range
-            seq_lengths = seq_lengths.clamp(min=0, max=hidden_states.shape[1] - 1)
-            # Gather final hidden states: (batch_size, hidden_size)
+            # Count non-padding tokens for each sequence
+            seq_lengths = attention_mask.sum(dim=1)  # (batch_size,)
+            # Last non-padding token index (0-indexed)
+            last_token_indices = seq_lengths - 1
+            # Ensure indices are valid (non-negative)
+            last_token_indices = torch.clamp(last_token_indices, min=0)
+            # Ensure indices are on the same device
+            last_token_indices = last_token_indices.to(hidden_states.device)
+            
+            # Gather hidden states at last token positions: (batch_size, hidden_size)
             batch_indices = torch.arange(
                 hidden_states.shape[0],
                 device=hidden_states.device,
             )
-            final_hidden = hidden_states[batch_indices, seq_lengths]
+            final_hidden = hidden_states[batch_indices, last_token_indices]
         else:
-            # If no attention mask, use the last token
+            # If no attention mask, assume no padding and use the last token
             final_hidden = hidden_states[:, -1, :]
         
         # Ensure reward_head is on the same device and dtype as final_hidden
@@ -183,88 +189,59 @@ def build_reward_inputs(
     device: torch.device,
 ):
     """
-    Build inputs for reward model training.
-    Formats prompt-response pair using chat template.
+    Build inputs for reward model inference/training.
+    
+    Uses LEFT padding so that response tokens are always at the end.
+    This ensures the reward model always uses the response's last token
+    as the final hidden state, making reward computation more intuitive.
+    
+    Format: [PAD...PAD][prompt tokens][response tokens]
+                   ↑                          ↑
+              padding (left)           actual tokens (right)
+    
+    Args:
+        tokenizer: tokenizer
+        prompt: user prompt
+        response: model response
+        max_length: maximum sequence length
+        device: device to place tensors on
     
     Returns:
-        input_ids: (1, seq_len)
-        attention_mask: (1, seq_len) or None
+        input_ids: (1, seq_len) - left-padded
+        attention_mask: (1, seq_len) - 1 for tokens, 0 for padding
     """
-    # Debug: verify response is not empty
+    # Validate inputs
     if not response or len(response.strip()) == 0:
-        print(f"[WARNING] build_reward_inputs received empty response! prompt length: {len(prompt)}")
+        raise ValueError(f"Response cannot be empty! Prompt length: {len(prompt)}")
     
-    # Format full conversation
+    # Format prompt + response using chat template
     full_text = format_chat(
         tokenizer,
         prompt=prompt,
         response=response,
     )
     
-    # Debug: verify response is in formatted text
-    response_in_text = response.strip() in full_text if response else False
-    if not response_in_text and response:
-        print(f"[WARNING] Response not found in formatted text! Response: {response[:50]}...")
-    
-    # Set padding side to left so that response tokens are at the end
-    # This ensures the last non-padding token is from the response
+    # Use LEFT padding so response tokens are at the end
+    # This way, the last non-padding token is always from the response
     original_padding_side = tokenizer.padding_side
     tokenizer.padding_side = "left"
     
-    tokens = tokenizer(
-        full_text,
-        truncation=True,
-        max_length=max_length,
-        padding="max_length",
-        return_tensors="pt",
-    )
-    
-    # Restore original padding side
-    tokenizer.padding_side = original_padding_side
+    try:
+        tokens = tokenizer(
+            full_text,
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+    finally:
+        # Always restore original padding side
+        tokenizer.padding_side = original_padding_side
     
     input_ids = tokens["input_ids"].to(device)
     attention_mask = tokens.get("attention_mask", None)
     if attention_mask is not None:
         attention_mask = attention_mask.to(device)
-    
-    # Debug: print input summary
-    # Determine pad token ID (Gemma uses 0, but check tokenizer)
-    if tokenizer.pad_token_id is not None:
-        pad_token_id = tokenizer.pad_token_id
-    elif hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
-        pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
-    else:
-        pad_token_id = 0
-    
-    # Use attention_mask if available (more reliable than checking pad_token_id)
-    if attention_mask is not None:
-        non_padding_tokens = attention_mask[0].sum().item()
-        last_non_pad_pos = non_padding_tokens - 1  # 0-indexed
-        # Get actual token IDs from the sequence (non-padding part)
-        actual_token_ids = input_ids[0][:non_padding_tokens].cpu().tolist()
-    else:
-        # Fallback: check pad_token_id
-        non_padding_mask = input_ids[0] != pad_token_id
-        non_padding_tokens = non_padding_mask.sum().item()
-        last_non_pad_pos = (non_padding_mask).nonzero(as_tuple=False)[-1].item() if non_padding_tokens > 0 else -1
-        actual_token_ids = input_ids[0][non_padding_mask].cpu().tolist()
-    
-    # Get last 20 token IDs for debugging
-    token_snippet = actual_token_ids[-20:] if len(actual_token_ids) >= 20 else actual_token_ids
-    
-    # Also check response tokens in the actual sequence
-    # Decode last part to verify response is included
-    try:
-        last_50_tokens_text = tokenizer.decode(actual_token_ids[-50:] if len(actual_token_ids) >= 50 else actual_token_ids, skip_special_tokens=False)
-        response_check = response[:50].strip().lower() in last_50_tokens_text.lower() if response else False
-    except:
-        response_check = False
-        last_50_tokens_text = ""
-    
-    print(f"[Reward Input Debug] Prompt len: {len(prompt)}, Response len: {len(response)}, Full text len: {len(full_text)}")
-    print(f"[Reward Input Debug] Non-pad tokens: {non_padding_tokens}, Last non-pad pos: {last_non_pad_pos}, Pad token ID: {pad_token_id}")
-    print(f"[Reward Input Debug] Last 20 token IDs: {token_snippet}")
-    print(f"[Reward Input Debug] Response in last 50 tokens: {response_check}, Last 50 tokens decoded (preview): {last_50_tokens_text[-100:]}")
     
     return input_ids, attention_mask
 
@@ -649,16 +626,20 @@ def compute_reward(
     """
     Compute reward for a prompt-response pair.
     
+    Uses left padding internally so that the response's last token
+    is always used for reward computation (via the reward model's forward pass).
+    
     Args:
         reward_model: RewardModel instance
         tokenizer: tokenizer
-        prompt: input prompt
+        prompt: user prompt
         response: model response
-        max_length: max token length
+        max_length: maximum sequence length
     
     Returns:
-        reward: scalar reward value
+        reward: scalar reward value (float)
     """
+    # Build inputs with left padding (response tokens at the end)
     input_ids, attention_mask = build_reward_inputs(
         tokenizer,
         prompt,
@@ -667,41 +648,9 @@ def compute_reward(
         reward_model.base_model.device,
     )
     
-    # Debug: check input hash to verify different inputs
-    # Use only non-padding tokens for hash to compare actual content
-    if tokenizer.pad_token_id is not None:
-        pad_token_id = tokenizer.pad_token_id
-    elif hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
-        pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
-    else:
-        pad_token_id = 0
-    
-    # Use attention_mask if available (more reliable)
-    if attention_mask is not None:
-        seq_length = attention_mask.sum(dim=1).item()
-        actual_length = seq_length
-        non_padding_tokens = input_ids[0][:seq_length].cpu().numpy()
-    else:
-        # Fallback: check pad_token_id
-        non_padding_mask = input_ids[0] != pad_token_id
-        actual_length = non_padding_mask.sum().item()
-        non_padding_tokens = input_ids[0][non_padding_mask].cpu().numpy()
-        seq_length = input_ids.shape[1]
-    
-    input_hash = hash(non_padding_tokens.tobytes()) if len(non_padding_tokens) > 0 else 0
-    
-    # Also hash the response part specifically (last 100 tokens of non-padding)
-    response_hash = hash(non_padding_tokens[-100:].tobytes()) if len(non_padding_tokens) > 100 else hash(non_padding_tokens.tobytes())
-    
-    # Debug: check what token position will be used for reward
-    last_token_pos = actual_length - 1  # 0-indexed position that will be used
-    print(f"[Reward Compute Debug] Response length: {len(response)}, Actual seq length: {actual_length}, Last token pos for reward: {last_token_pos}")
-    print(f"[Reward Compute Debug] Full input hash: {input_hash}, Response part hash (last 100 tokens): {response_hash}")
-    
+    # Forward pass through reward model
+    # The model extracts the last non-padding token (response's last token)
+    # and passes it through the reward head
     reward = reward_model(input_ids=input_ids, attention_mask=attention_mask)
-    reward_value = reward.item()
     
-    # Debug: print reward
-    print(f"[Reward Compute Debug] Final reward: {reward_value:.6f}")
-    
-    return reward_value
+    return reward.item()
