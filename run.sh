@@ -24,7 +24,7 @@ python train.py \
 
 # After SFT training, set the path for other algorithms
 # Note: The path will be auto-generated if not provided, but you can set it explicitly here
-sft_lora_path="checkpoints/google/gemma-3-4b-it-sft-lora"
+sft_lora_path="checkpoints/$model_name/sft-lora"
 
 # DPO (Direct Preference Optimization)
 # Requires: SFT checkpoint must exist at sft_lora_path
